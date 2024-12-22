@@ -10,7 +10,7 @@ services:
     image: nginx:latest
     container_name: proxy_web_nginx
     ports:
-      - "80:80"
+      - "8090:80"
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./log/:/var/log/nginx/:rw

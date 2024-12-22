@@ -1,127 +1,105 @@
-from fastapi import FastAPI, Depends, HTTPException
-# from fastapi.security import OAuth2PasswordBearer
+from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from pydantic import BaseModel
 import socket
 import datetime
 from nltk.tokenize import PunktTokenizer
 from utils.baixa_arquivos import verifica_e_baixa_arquivos
 import re
-
-# Certifique-se de que os recursos necessários do NLTK estão instalados
-
 from utils.nlp import lemmatize_sentence, stem_sentence
 
-app = FastAPI()
-# oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+# Recursos necessários do NLTK
 verifica_e_baixa_arquivos("tokenizers", "punkt.zip")
 verifica_e_baixa_arquivos("tokenizers", "punkt_tab.zip")
 verifica_e_baixa_arquivos("stemmers", "rslp.zip")
 
+app = FastAPI()
+
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+
+# Simulando usuários e tokens
+FAKE_USERS_DB = {
+    "user1": {"username": "user1", "password": "secret", "token": "token1"},
+    "user2": {"username": "user2", "password": "secret", "token": "token2"},
+}
+
+def verify_token(token: str = Depends(oauth2_scheme)):
+    for user in FAKE_USERS_DB.values():
+        if user["token"] == token:
+            return user
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Token inválido ou não fornecido",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
 
 class Sentence(BaseModel):
     text: str
 
-
-@app.get("/")
-def read_root():
-    return {
-        "message": "Hello, World!",
-        "date_time": datetime.datetime.utcnow().__str__(),
-        "hostname": socket.gethostname()}
-
-
-@app.post("/token/copia={envia_copia}")
-def token(sentence: Sentence, envia_copia: bool):
-    # Eu envio o sentença completa (como uma página no caso)
-    # usando o formato "{ "text": "texto a ser tokenizado" }"
-    # como retorno teremos 3 campos de retorno:
-    # "original (texto)
-    # "tokens" (array de string)
-    # count (int quantidade de tokens)
-
-
-    if is_not_palavras(sentence.text):
-        return {"estado": "isso não tem palavras comuns, ou tem somente números"}
-
-    stok = PunktTokenizer("portuguese")
-    arr = stok.tokenize(sentence.text)
+# Função auxiliar genérica para processar texto
+def process_text(sentence: str, processor_function, envia_copia: bool, process_name: str):
+    if is_not_palavras(sentence):
+        return {"estado": f"Texto inválido para processamento: {process_name}"}
+    
+    processed_text = processor_function(sentence)
     if envia_copia:
-        return {
-            "original": sentence.text,
-            "tokens": arr,
-            "count": len(arr),
-            "estado": "ok"
-        }
+        return {"original": sentence, process_name: processed_text, "estado": "ok"}
     else:
-        return {"tokens": arr, "count": len(arr), "estado": "ok"}
+        return {process_name: processed_text, "estado": "ok"}
 
-
+# Função auxiliar para verificar se o texto contém palavras comuns
 def is_not_palavras(text):
-    # Divide a string por espaços, tabulações e quebras de linha
     palavras = re.split(r'[\s\t\n.]+', text)
-    #palavras = [palavra for palavra in text.split()]
-
     total_numeros = sum(c.isdigit() for c in text)
     total_letras = sum(c.isalpha() for c in text)
     total_letras_com_numeros = total_numeros + total_letras
-    if total_letras_com_numeros  == 0:
-        return True  # Não há nenhuma palavra
 
-    # Conta quantas palavras têm mais de 60 caracteres
+    if total_letras_com_numeros == 0:
+        return True  # Não há palavras
+
     palavras_longas = [palavra for palavra in palavras if len(palavra) > 60]
-
-    # Conta palavras curtas
     palavras_curtas = [palavra for palavra in palavras if len(palavra) <= 2]
 
-    # Verifica se não há nenhuma palavra com mais de 60 caracteres
-    if len(palavras_longas) == 0 and len(palavras_curtas) == 0:
-        return True  # Todas as palavras são curtas ou não tem palavras com mais de 60 caracteres
-
-    # Verifica se não há nenhuma palavra com mais de 60 caracteres
-    if len(palavras_longas) == 0:
-        return False  # Todas as palavras são curtas
-
-    # Verifica se não há nenhuma palavra curta
-
-    # Calcula a porcentagem de palavras com mais de 60 caracteres
     if len(palavras) == 0:
-        return False  # Evita divisão por zero se não houver palavras
+        return False  # Evita divisão por zero
 
     porcentagem_longa = (len(palavras_longas) / len(palavras)) * 100
     porcentagem_curta = (len(palavras_curtas) / len(palavras)) * 100
     porcentagem_numeros = (total_numeros / total_letras_com_numeros) * 100
-    # Verifica se mais de 80% das palavras curtas ou longas
-    ## Quaisquer um dos casos pode ser ruido.
-    return (porcentagem_longa > 80
-            or porcentagem_curta > 80
-            or porcentagem_numeros > 80)
 
+    return (porcentagem_longa > 80 or porcentagem_curta > 80 or porcentagem_numeros > 80)
+
+@app.post("/login")
+def login(form_data: OAuth2PasswordRequestForm = Depends()):
+    user = FAKE_USERS_DB.get(form_data.username)
+    if not user or user["password"] != form_data.password:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Usuário ou senha inválidos",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return {"access_token": user["token"], "token_type": "bearer"}
+
+@app.get("/")
+def read_root(user: dict = Depends(verify_token)):
+    return {
+        "message": "Hello, World!",
+        "date_time": datetime.datetime.utcnow().__str__(),
+        "hostname": socket.gethostname(),
+        "user": user["username"]
+    }
+
+@app.post("/token/copia={envia_copia}")
+def token(sentence: Sentence, envia_copia: bool, user: dict = Depends(verify_token)):
+    def tokenize_text(text):
+        stok = PunktTokenizer("portuguese")
+        return stok.tokenize(text)
+    return process_text(sentence.text, tokenize_text, envia_copia, "tokens")
 
 @app.post("/lematize/copia={envia_copia}")
-def lemmatize(sentence: Sentence, envia_copia: bool):
-    original_text = sentence.text
+def lemmatize(sentence: Sentence, envia_copia: bool, user: dict = Depends(verify_token)):
+    return process_text(sentence.text, lemmatize_sentence, envia_copia, "lematizado")
 
-    if is_not_palavras(sentence.text):
-        return {"estado": "isso não tem palavras comuns, ou não tem palavras"}
-
-    lemmatized_text = lemmatize_sentence(original_text)
-    if envia_copia:
-        return {"original": original_text, "lematizado": lemmatized_text, "estado": "ok"}
-    else:
-        return {"lematizado": lemmatized_text, "estado": "ok"}
-
-
-# Serviço 3: Radicalização
 @app.post("/radical/copia={envia_copia}")
-def stem(sentence: Sentence, envia_copia: bool):
-
-    if is_not_palavras(sentence.text):
-        return {"estado": "isso não tem palavras comuns"}
-
-    original_text = sentence.text
-    stemmed_text = stem_sentence(original_text)
-
-    if envia_copia:
-        return {"original": original_text, "radical": stemmed_text, "estado": "ok"}
-    else:
-        return {"radical": stemmed_text, "estado": "ok"}
+def stem(sentence: Sentence, envia_copia: bool, user: dict = Depends(verify_token)):
+    return process_text(sentence.text, stem_sentence, envia_copia, "radical")
